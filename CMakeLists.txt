@@ -12,11 +12,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 set(LIBPOPT popt)
 
 set(SOURCES
-  datastore.c
-  iwtftpd.c
-  logging.c
-  tftp.c
-  util.c
+  src/datastore.c
+  src/iwtftpd.c
+  src/logging.c
+  src/tftp.c
+  src/util.c
   )
 
 if(DEBUG)

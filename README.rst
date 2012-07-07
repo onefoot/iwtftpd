@@ -2,39 +2,39 @@
 iwtftpd
 =======
 
- 'iwtftpd' is a simple TFTP server. (RFC 1350)
+"iwtftpd" is a simple TFTP server. (RFC 1350)
 
 Build and Install
 -----------------
 
- **Requirements:**
+**Requirements:**
 
-  For building needs the Makefile generator and a optional library below.
+For building needs the Makefile generator and a optional library below.
 
- * cmake
- * libpopt
+* cmake
+* libpopt
 
- **Build:**
+**Build:**
 
-  ::
+::
 
-   $ cmake .
-   $ make
+  $ cmake .
+  $ make
 
- **Install:**
+**Install:**
 
-  ::
- 
-   $ mv bin/iwtftpd /PATH_TO_YOUR_SYSTEM
+::
+
+  $ mv bin/iwtftpd /PATH_TO_YOUR_SYSTEM
 
 Usage
 -----
 
- **iwtftpd [OPTIONS]**
+**iwtftpd [OPTIONS]**
 
- **Options:**
+*Options:*
 
-  .. csv-table::
+.. csv-table::
   
    -4,,                          Use only IPv4
    -6,,                          Use only IPv6

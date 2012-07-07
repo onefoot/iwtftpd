@@ -36,13 +36,14 @@ Usage
   
    -4,,                          Use only IPv4
    -6,,                          Use only IPv6
-   -i, --if=*NETDEV*,             Use bind interface only
-   -d, --datastore=*DIRPATH*,     Path of datastore
-   -u, --username=*USER*,         Username in /etc/passwd
+   -i, --if=NETDEV,             Use bind interface only
+   -d, --datastore=DIRPATH,     Path of datastore
+   -u, --username=USER,         Username in /etc/passwd
    -v, --verbose,               Verbose mode
    -V, --version,               Show version
 
 Must be run as root. The user ID of the process is changed to *USER* or 'nobody'.
+
 By default, the data store is '/tftpboot'. You must have created this directory and
 set the permissions 'rwxrwxrwx'.
 

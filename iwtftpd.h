@@ -41,6 +41,13 @@
 #include "iw_tftp.h"
 
 
+#define PROGRAM_NAME "iwtftpd"
+#ifndef PROGRAM_VERSION
+#define PROGRAM_VERSION "0.0"
+#endif
+#define PROGRAM_INFO PROGRAM_NAME" v"PROGRAM_VERSION
+
+
 /* constants */
 #define DEFAULT_IPVER (IW_IPV4 | IW_IPV6)     /* default using IPv4 and IPv6 */
 #define DEFAULT_USER "nobody"		      /* default user of process */
@@ -73,12 +80,13 @@ enum STATCODE {
   E_FATALERR,
   E_LOG_FAIL_INIT,
   E_LOG_MODERR,
-  E_NOASROOT,
   E_OPTION_BAD,
   E_TFTP_FAIL_INIT,
   E_USER_UNKNOWN,
+  I_NOASROOT,
   I_START_SERVER,
   I_EXIT_SERVER,
+  I_SHOW_VER,
 };
 
 enum STATCODE_VERBOSE {

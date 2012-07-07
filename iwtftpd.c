@@ -44,13 +44,14 @@ static struct iwstatus statmsgs[] = {
   { E_FATALERR, "error: fatal error" },
   { E_LOG_FAIL_INIT, "error: iwlog initialization failed" },
   { E_LOG_MODERR, "error: iwlog module error" },
-  { E_NOASROOT, "error: must be run as root.." },
   { E_OPTION_BAD, "error: bad option: '%s': %s" },
   { E_TFTP_FAIL_INIT, "error: iwtftp initialization failed" },
   { E_USER_UNKNOWN, "error: unknown user '%s'" },
   /* info */
+  { I_NOASROOT, "info: must be run as root" },
   { I_START_SERVER, "info: starting server" },
   { I_EXIT_SERVER, "info: exiting server" },
+  { I_SHOW_VER, PROGRAM_INFO },
   { 0, NULL }
 };
 
@@ -98,10 +99,17 @@ main(int argc, const char **argv)
     exitval = EX_USAGE;
     goto ferr;
   }
+  switch (set_svconf(svc, argc, argv)) {
+  case I_SHOW_VER:
+    goto showver;
+  case IW_ERR:
+    exitval = EX_USAGE;
+    goto ferr;
+  }
 
   /* check root */
   if ((psuid = getuid()) != 0) {
-    pmsg(E_NOASROOT);
+    pmsg(I_NOASROOT);
     exitval = EX_USAGE;
     goto ferr;
   }
@@ -193,6 +201,11 @@ main(int argc, const char **argv)
   free(svc);
   exit(EX_OK);
 
+ showver:
+  pmsg(I_SHOW_VER);
+  free(svc);
+  exit(EX_OK);
+  
  ferr:
   if (exitval != EX_USAGE) {
     pmsg(E_FATALERR);
@@ -292,6 +305,7 @@ set_svconf(struct svconf *psv, int pargc, const char **pargv)
   char *dirpath;
   char *uname;
   int32_t verbose = IW_FALSE;
+  int32_t showver = IW_FALSE;
   const char *leftover;
 
   struct poptOption optlist[] = {
@@ -301,6 +315,7 @@ set_svconf(struct svconf *psv, int pargc, const char **pargv)
     { "datastore", 'd', POPT_ARG_STRING, &dirpath, 'd', "Path of datastore", "DIRPATH" },
     { "username", 'u', POPT_ARG_STRING, &uname, 'u', "Username in /etc/passwd", "USER" },
     { "verbose", 'v', POPT_ARG_VAL, &verbose, IW_TRUE, "Verbose mode", NULL },
+    { "version", 'V', POPT_ARG_VAL, &showver, IW_TRUE, "Show version", NULL },
     POPT_AUTOHELP
     POPT_TABLEEND
   };
@@ -334,6 +349,11 @@ set_svconf(struct svconf *psv, int pargc, const char **pargv)
     goto err;
   }
 
+  if (showver == IW_TRUE) {
+    poptFreeContext(optcon);
+    return I_SHOW_VER;
+  }
+  
   if (! useipver) {
     pmsg(E_OPTION_BAD, "specify either -4 or -6", "");
     goto err;

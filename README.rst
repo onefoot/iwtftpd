@@ -2,7 +2,7 @@
 iwtftpd
 =======
 
-"iwtftpd" is a simple TFTP server for Linux OS. (RFC 1350)
+"iwtftpd" is a simple TFTP server for Linux OS. (RFC1350)
 
 Build and Install
 -----------------
@@ -52,7 +52,7 @@ You must have created this directory and set the permissions 'rwxrwxrwx'.
 Note
 ----
 
-The transfer mode 'ascii' is not supported. use only 'octet'.
+The transfer mode 'netascii' is not supported. use only 'octet'.
 
 Uninstall
 ---------

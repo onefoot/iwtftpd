@@ -95,10 +95,6 @@ main(int argc, const char **argv)
     goto ferr;
   }
 
-  if (set_svconf(svc, argc, argv) == IW_ERR) {
-    exitval = EX_USAGE;
-    goto ferr;
-  }
   switch (set_svconf(svc, argc, argv)) {
   case I_SHOW_VER:
     goto showver;

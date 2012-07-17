@@ -8,15 +8,15 @@ set(PRJ_VERSION "${PRJ_MAJOR_VERSION}.${PRJ_MINOR_VERSION}")
 
 set(TARGET_NAME iwtftpd)
 set(CMAKE_C_FLAGS "-W -Wall")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 set(LIBPOPT popt)
 
-set(SOURCES
-  src/datastore.c
-  src/iwtftpd.c
-  src/logging.c
-  src/tftp.c
-  src/util.c
+set(SOURCE_FILES
+  ${PROJECT_SOURCE_DIR}/src/datastore.c
+  ${PROJECT_SOURCE_DIR}/src/iwtftpd.c
+  ${PROJECT_SOURCE_DIR}/src/logging.c
+  ${PROJECT_SOURCE_DIR}/src/tftp.c
+  ${PROJECT_SOURCE_DIR}/src/util.c
   )
 
 if(DEBUG)
@@ -26,6 +26,6 @@ endif()
 
 add_definitions(-DPROGRAM_VERSION=\"${PRJ_VERSION}\")
 
-add_executable(${TARGET_NAME} ${SOURCES})
+add_executable(${TARGET_NAME} ${SOURCE_FILES})
 target_link_libraries(${TARGET_NAME} ${LIBPOPT})
 

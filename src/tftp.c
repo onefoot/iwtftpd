@@ -101,6 +101,8 @@ static struct iwstatus iwtftp_statvmsgs[] = {
   { EV_FAIL_SOCKET, "error: socket: failed to create a socket: %s" },
   { EV_NULL_OBJ, "error: invalid object" },
   { EV_SESSION_NOTFOUND, "error: session not found, '%s:%d'" },
+  { EV_FAIL_GET_SESBUF, "error: failed to get the data from the session buffer, '%s:%d'" },
+  { EV_FAIL_PUT_SESBUF, "error: failed to put the data to the session buffer, '%s:%d'" },
   /* info verbose */
   { IV_ACK_INCORRECT, "info: ack filed is incorrect" },
   { IV_DATA_INCORRECT, "info: data filed is too long" },
@@ -161,6 +163,12 @@ static struct iwstatus iwtftp_statvmsgs[] = {
   { DBG_TFTP_PROC, "DBG: TFTP processing" },
   { DBG_UPDATE_EVENT, "DBG: updating epoll events" },
   { DBG_UPDATE_RETRY, "DBG: updating retry count of the session" },
+  { DBG_GET_SESBUF_DATA, "DBG: reading from the session buffer" },
+  { DBG_PUT_SESBUF_DATA, "DBG: writing to the session buffer" },
+  { DBG_SESBUF_IOLEN, "DBG: SESBUF: I/O len=%d" },
+  { DBG_SESBUF, "DBG: SESBUF: mode=%d, datalen=%d" },
+  { DBG_SESBUF_EMPTY, "DBG: SESBUF: session buffer is empty" },
+  { DBG_SESBUF_FULLORFIN, "DBG: SESBUF: session buffer is full, or received the final data" },
 #endif	/* DEBUG */
   { 0, NULL }
 };
@@ -731,7 +739,7 @@ tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
       break;
     }
     
-    if (! (clses = add_newsession(&ins->seshead, sock, clip, clport, reqmsg.filename))) {
+    if (! (clses = add_newsession(&ins->seshead, sock, clip, clport, reqmsg.filename, reqmsg.mode))) {
       pmsg(EV_FAIL_ADD_NEWSESSION, clip, clport);
       pmsg(E_SERVER_ERR);
       tftperrcode = TFTP_ERR_SEEMSG;
@@ -742,11 +750,11 @@ tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
     if (opcode == OP_RRQ) {
       /* make TFTP DATA */
       if ((sinfo->msglen = make_tftpdata_msg(clses, ins->ads, sinfo->msgbuf, sizeof sinfo->msgbuf)) < 0) {
-	pmsg(E_FAIL_LOADFILE, clses->filename);
 	tftperrcode = TFTP_ERR_SEEMSG;
 	snprintf(emsgbuf, sizeof emsgbuf, "server error");
 	goto errsend;
       }
+
     }
     if (opcode == OP_WRQ) {
       /* make TFTP ACK */
@@ -776,24 +784,23 @@ tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
       goto resend;
     }
     else if (ntohs(*datmsg.blknum) == (clses->blknum < TFTP_BLKNUM_MAX ? clses->blknum + 1 : 0)) {
-      switch (save_data(clses, ins->ads, datmsg.data, dlen - sizeof(uint16_t) * 2)) {
-      case IW_ERR:
-	pmsg(E_FAIL_SAVEFILE, clses->filename);
-	tftperrcode = TFTP_ERR_ACCESSDENY;
-	goto errsend;
-	break;
-      case 0:
-	DBG_PRINT(DBG_SET_FIN);
+      /* check fin */
+      if (dlen - sizeof(uint16_t) * 2 < TFTP_DATALEN_MAX) {
 	clses->fin = IW_TRUE;
-	break;
-      default:
-	if (dlen - sizeof(uint16_t) * 2 < TFTP_DATALEN_MAX) {
-	  DBG_PRINT(DBG_SET_FIN);
-	  clses->fin = IW_TRUE;
-	  close_data(clses, ins->ads);
-	}
+	DBG_PRINT(DBG_SET_FIN);
       }
 
+      DBG_PRINT(DBG_PUT_SESBUF_DATA);
+      if (put_session_data(clses, ins->ads, datmsg.data, dlen - sizeof(uint16_t) * 2) == IW_ERR) {
+	pmsg(EV_FAIL_PUT_SESBUF, clses->clip, clses->clport);
+	tftperrcode = TFTP_ERR_ACCESSDENY;
+	goto errsend;
+      }
+      
+      if (clses->fin == IW_TRUE) {
+	close_data(clses, ins->ads);
+      }
+	
       /* make TFTP ACK */
       if ((sinfo->msglen = make_tftpack_msg(clses, ntohs(*datmsg.blknum),
 					    sinfo->msgbuf, sizeof sinfo->msgbuf)) == IW_ERR) {
@@ -837,14 +844,9 @@ tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
 
       /* make TFTP DATA */
       if ((sinfo->msglen = make_tftpdata_msg(clses, ins->ads, sinfo->msgbuf, sizeof sinfo->msgbuf)) < 0) {
-	pmsg(E_FAIL_LOADFILE, clses->filename);
 	tftperrcode = TFTP_ERR_SEEMSG;
 	snprintf(emsgbuf, sizeof emsgbuf, "server error");
 	goto errsend;
-      }
-      
-      if (sinfo->msglen - sizeof(uint16_t) * 2 < TFTP_DATALEN_MAX) {
-	clses->fin = IW_TRUE;
       }
     }
     else {
@@ -976,7 +978,8 @@ resend_allsession(struct session *head, IWDS *ads)
 /* for sessions */
 /* ------------ */
 struct session *
-add_newsession(struct session **phead, int32_t svsock, const char *clip, uint16_t clport, const char *file)
+add_newsession(struct session **phead, int32_t svsock, const char *clip, uint16_t clport,
+	       const char *file, const char *mode)
 {
   DBG_PRINT(DBG_ADD_SESSION);
   struct session *clses = NULL;
@@ -996,6 +999,13 @@ add_newsession(struct session **phead, int32_t svsock, const char *clip, uint16_
 
   strncpy(clses->filename, file, sizeof clses->filename - 1);
 
+  if (IS_NETASCII(mode)) {
+    clses->tftpmode = TFTP_MODE_NETASCII;
+  }
+  else if (IS_OCTET(mode)) {
+    clses->tftpmode = TFTP_MODE_OCTET;
+  }
+      
   svaddrlen = sizeof svaddr;
   if (getsockname(svsock, (struct sockaddr *)&svaddr, &svaddrlen) == -1) {
     pmsg(EV_FAIL_GETSOCKNAME, strerror(errno));
@@ -1032,6 +1042,15 @@ create_session(struct session **phead)
   }
   memset(node, 0, sizeof(struct session));
   node->clsock = -1;
+  node->tftpmode = TFTP_MODE_OCTET;
+
+  if (! (node->sesbuf = malloc(sizeof(struct datastorage)))) {
+    pmsg(E_FAIL_MALLOC, __FUNCTION__);
+    goto err;
+  }
+  memset(node->sesbuf, 0, sizeof(struct datastorage));
+  node->sesbuf->pos = node->sesbuf->storage;
+  node->sesbuf->fopt = IW_FALSE;
 
   if (*phead) {
     node->next = *phead;
@@ -1065,25 +1084,6 @@ get_session(struct session *head, const char *clip, uint16_t clport)
 
 
 static void
-close_data(struct session *clses, IWDS *ads)
-{
-  DBG_PRINT(DBG_CLOSE_DATA);
-  struct dsreq dticket;
-
-  /* close the file reading or writing */
-  dticket.dsid = clses->clsock;
-  dticket.dfile = clses->filename;
-  dticket.dbuf = NULL;
-  dticket.dlen = 0;
-  dticket.derr = 0;
-
-  if (iwds_close(ads, &dticket) == IW_ERR) {
-    pmsg(E_DS_FAIL_CLOSE, iwds_strerr(dticket.derr));
-  }
-}
-
-
-static void
 del_session(struct session **phead, const char *clip, uint16_t clport)
 {
   DBG_PRINT(DBG_DEL_SESSION);
@@ -1112,6 +1112,7 @@ del_session(struct session **phead, const char *clip, uint16_t clport)
   }
 
   close(tmp->clsock);
+  free(tmp->sesbuf);
   free(tmp);
 }
 
@@ -1129,6 +1130,7 @@ del_allsession(struct session **phead)
   while (pm) {
     tmp = pm->next;
     close(pm->clsock);
+    free(pm->sesbuf);
     free(pm);
     pm = tmp;
   }
@@ -1165,7 +1167,7 @@ cleanup_session(struct session **phead)
 }
 
 
-/* for TFTP REQ message */
+/* parsing TFTP message */
 /* -------------------- */
 static int32_t
 parse_tftpreq(struct tftpreq *req, void *msg, size_t msglen)
@@ -1208,6 +1210,12 @@ parse_tftpreq(struct tftpreq *req, void *msg, size_t msglen)
       break;
     }
   }
+  if (passed) {
+    if (! IS_NETASCII(req->mode) && ! IS_OCTET(req->mode)) {
+      passed = IW_FALSE;
+    }
+  }
+
   if (! passed) {
     pmsg(IV_MODE_INCORRECT);
     goto err;
@@ -1215,73 +1223,6 @@ parse_tftpreq(struct tftpreq *req, void *msg, size_t msglen)
 
   DBG_SH_TFTPMSG(0, req, msglen);
   return IW_OK;
-
- err:
-  return IW_ERR;
-}
-
-
-/* for TFTP DATA message */
-/* --------------------- */
-static ssize_t
-make_tftpdata_msg(struct session *clses, IWDS *ads, void *emptybuf, size_t bufsize)
-{
-  DBG_PRINT(DBG_MAKE_TFTPDATA);
-  struct tftpdata datmsg;
-  struct dsreq dticket;
-  size_t datalen;
-  ssize_t msglen;
-
-  if (bufsize < TFTP_MSGLEN_MAX) {
-    pmsg(EV_BUF_TOOSHORT, "data");
-    goto err;
-  }
-
-  datmsg.opcode = emptybuf;
-  datmsg.blknum = emptybuf + sizeof(uint16_t);
-  datmsg.data = emptybuf + sizeof(uint16_t) + sizeof(uint16_t);
-
-  *datmsg.opcode = htons(OP_DATA);
-
-  clses->blknum = (clses->blknum < TFTP_BLKNUM_MAX ? clses->blknum + 1 : 0);
-  *datmsg.blknum = htons(clses->blknum);
-
-  DBG_PRINT(DBG_DS_SETREQ);
-
-  /* load data from datastore */
-  dticket.dsid = clses->clsock;
-  dticket.dfile = clses->filename;
-  dticket.dbuf = datmsg.data;
-  dticket.dlen = TFTP_DATALEN_MAX;
-  dticket.derr = 0;
-
-  DBG_SH_DSREQ(dticket);
-  DBG_PRINT(DBG_DS_LOAD);
-
-  datalen = iwds_read(ads, &dticket);
-  if (dticket.derr) {
-    pmsg(E_DS_FAIL_READ, iwds_strerr(dticket.derr));
-    goto err;
-  }
-
-  DBG_SH_DSIOLEN(datalen);
-  DBG_SH_DSREQ(dticket);
-
-  if (datalen < dticket.dlen) {
-    /* EOF */
-    clses->fin = IW_TRUE;
-  }
-
-  msglen = sizeof(uint16_t) * 2 + datalen;
-
-  memcpy(clses->lastmsg, emptybuf, msglen);
-  
-  clses->lastmsglen = msglen;
-  clses->lastsending = time(NULL);
-  clses->retrycount = 0;
-
-  DBG_SH_TFTPMSG(OP_DATA, &datmsg, msglen);
-  return msglen;
 
  err:
   return IW_ERR;
@@ -1321,81 +1262,6 @@ parse_tftpdata(struct tftpdata *dat, void *msg, size_t msglen)
 }
 
 
-static ssize_t
-save_data(struct session *clses, IWDS *ads, void *data, size_t datalen)
-{
-  struct dsreq dticket;
-  size_t wlen;
-
-  DBG_PRINT(DBG_DS_SETREQ);
-  /* save data to datastore */
-  dticket.dsid = clses->clsock;
-  dticket.dfile = clses->filename;
-  dticket.dbuf = data;
-  if (! data) {
-    dticket.dlen = 0;		/* EOF */
-  }
-  else {
-    dticket.dlen = datalen;
-  }
-  dticket.derr = 0;
-
-  DBG_SH_DSREQ(dticket);
-  DBG_PRINT(DBG_DS_SAVE);
-  
-  wlen = iwds_write(ads, &dticket);
-  if (dticket.derr) {
-    pmsg(E_DS_FAIL_WRITE, iwds_strerr(dticket.derr));
-    goto err;
-  }
-
-  DBG_SH_DSIOLEN(wlen);
-  DBG_SH_DSREQ(dticket);
-  return wlen;
-
- err:
-  return IW_ERR;
-}
-
-
-/* for TFTP ACK message */
-/* -------------------- */
-static ssize_t
-make_tftpack_msg(struct session *clses, uint16_t blk, void *emptybuf, size_t bufsize)
-{
-  DBG_PRINT(DBG_MAKE_TFTPACK);
-  struct tftpack ackmsg;
-  ssize_t msglen;
-  
-  if (bufsize < TFTP_OPCODE_SIZE + TFTP_BLKNUM_SIZE) {
-    pmsg(EV_BUF_TOOSHORT, "ack");
-    goto err;
-  }
-
-  ackmsg.opcode = emptybuf;
-  ackmsg.blknum = emptybuf + sizeof(uint16_t);
-
-  *ackmsg.opcode = htons(OP_ACK);
-
-  clses->blknum = blk;
-  *ackmsg.blknum = htons(clses->blknum);
-
-  msglen = sizeof(uint16_t) * 2;
-
-  memcpy(clses->lastmsg, emptybuf, msglen);
-  
-  clses->lastmsglen = msglen;
-  clses->lastsending = time(NULL);
-  clses->retrycount = 0;
-
-  DBG_SH_TFTPMSG(OP_ACK, &ackmsg, msglen);
-  return msglen;
-
- err:
-  return IW_ERR;
-}
-
-
 static int32_t
 parse_tftpack(struct tftpack *ack, void *msg, size_t msglen)
 {
@@ -1417,43 +1283,6 @@ parse_tftpack(struct tftpack *ack, void *msg, size_t msglen)
 
   DBG_SH_TFTPMSG(OP_ACK, ack, msglen);
   return IW_OK;
-
- err:
-  return IW_ERR;
-}
-
-
-/* for TFTP ERROR message */
-/* ---------------------- */
-static ssize_t
-make_tftperr_msg(uint16_t ecode, void *emptybuf, size_t bufsize, const char *emsg, size_t emsglen)
-{
-  DBG_PRINT(DBG_MAKE_TFTPERROR);
-  struct tftperror err;
-  ssize_t msglen;
-
-  err.opcode = emptybuf;
-  err.errcode = emptybuf + sizeof(uint16_t);
-  err.errmsg = emptybuf + sizeof(uint16_t) * 2;
-
-  *err.opcode = htons(OP_ERROR);
-  *err.errcode = htons(ecode);
-
-  if (ecode != TFTP_ERR_SEEMSG) {
-    emsg = errmsgs[ecode];
-    emsglen = strlen(errmsgs[ecode]);
-  }
-
-  if (bufsize - (sizeof(uint16_t) * 2) < emsglen + 1) {
-    pmsg(EV_ERRMSG_TOOLONG);
-    goto err;
-  }
-
-  memcpy(err.errmsg, emsg, emsglen + 1);  
-  msglen = sizeof(uint16_t) * 2 + emsglen + 1;
-
-  DBG_SH_TFTPMSG(OP_ERROR, &err, msglen);
-  return msglen;
 
  err:
   return IW_ERR;
@@ -1500,6 +1329,423 @@ parse_tftperror(struct tftperror *terr, void *msg, size_t msglen)
   return IW_ERR;
 }
 
+
+/* operations of TFTP */
+/* ----------------- */
+static ssize_t
+make_tftpdata_msg(struct session *clses, IWDS *ads, void *emptybuf, size_t bufsize)
+{
+  DBG_PRINT(DBG_MAKE_TFTPDATA);
+  struct tftpdata datmsg;
+  ssize_t datalen;
+  ssize_t msglen;
+
+  if (bufsize < TFTP_MSGLEN_MAX) {
+    pmsg(EV_BUF_TOOSHORT, "data");
+    goto err;
+  }
+
+  datmsg.opcode = emptybuf;
+  datmsg.blknum = emptybuf + sizeof(uint16_t);
+  datmsg.data = emptybuf + sizeof(uint16_t) + sizeof(uint16_t);
+
+  *datmsg.opcode = htons(OP_DATA);
+
+  clses->blknum = (clses->blknum < TFTP_BLKNUM_MAX ? clses->blknum + 1 : 0);
+  *datmsg.blknum = htons(clses->blknum);
+
+  DBG_PRINT(DBG_GET_SESBUF_DATA);
+  if ((datalen = get_session_data(clses, ads, datmsg.data, TFTP_DATALEN_MAX)) == IW_ERR) {
+    pmsg(EV_FAIL_GET_SESBUF, clses->clip, clses->clport);
+    goto err;
+  }
+
+  /* check fin */
+  if (datalen < TFTP_DATALEN_MAX) {
+    clses->fin = IW_TRUE;
+    DBG_PRINT(DBG_SET_FIN);
+    close_data(clses, ads);
+  }
+
+  msglen = sizeof(uint16_t) * 2 + datalen;
+
+  /* for resending */
+  memcpy(clses->lastmsg, emptybuf, msglen);
+  clses->lastmsglen = msglen;
+  clses->lastsending = time(NULL);
+  clses->retrycount = 0;
+
+  DBG_SH_TFTPMSG(OP_DATA, &datmsg, msglen);
+  return msglen;
+
+ err:
+  return IW_ERR;
+}
+
+
+static ssize_t
+make_tftpack_msg(struct session *clses, uint16_t blk, void *emptybuf, size_t bufsize)
+{
+  DBG_PRINT(DBG_MAKE_TFTPACK);
+  struct tftpack ackmsg;
+  ssize_t msglen;
+  
+  if (bufsize < TFTP_OPCODE_SIZE + TFTP_BLKNUM_SIZE) {
+    pmsg(EV_BUF_TOOSHORT, "ack");
+    goto err;
+  }
+
+  ackmsg.opcode = emptybuf;
+  ackmsg.blknum = emptybuf + sizeof(uint16_t);
+
+  *ackmsg.opcode = htons(OP_ACK);
+
+  clses->blknum = blk;
+  *ackmsg.blknum = htons(clses->blknum);
+
+  msglen = sizeof(uint16_t) * 2;
+
+  /* for resending */
+  memcpy(clses->lastmsg, emptybuf, msglen);
+  clses->lastmsglen = msglen;
+  clses->lastsending = time(NULL);
+  clses->retrycount = 0;
+
+  DBG_SH_TFTPMSG(OP_ACK, &ackmsg, msglen);
+  return msglen;
+
+ err:
+  return IW_ERR;
+}
+
+
+static ssize_t
+make_tftperr_msg(uint16_t ecode, void *emptybuf, size_t bufsize, const char *emsg, size_t emsglen)
+{
+  DBG_PRINT(DBG_MAKE_TFTPERROR);
+  struct tftperror err;
+  ssize_t msglen;
+
+  err.opcode = emptybuf;
+  err.errcode = emptybuf + sizeof(uint16_t);
+  err.errmsg = emptybuf + sizeof(uint16_t) * 2;
+
+  *err.opcode = htons(OP_ERROR);
+  *err.errcode = htons(ecode);
+
+  if (ecode != TFTP_ERR_SEEMSG) {
+    emsg = errmsgs[ecode];
+    emsglen = strlen(errmsgs[ecode]);
+  }
+
+  if (bufsize - (sizeof(uint16_t) * 2) < emsglen + 1) {
+    pmsg(EV_ERRMSG_TOOLONG);
+    goto err;
+  }
+
+  memcpy(err.errmsg, emsg, emsglen + 1);  
+  msglen = sizeof(uint16_t) * 2 + emsglen + 1;
+
+  DBG_SH_TFTPMSG(OP_ERROR, &err, msglen);
+  return msglen;
+
+ err:
+  return IW_ERR;
+}
+
+
+static ssize_t
+get_session_data(struct session *clses, IWDS *ads, void *dstbuf, size_t dstbufsize)
+{
+  uint8_t *pm;
+  size_t len = 0;
+  size_t total = 0;
+  int32_t fend = IW_FALSE;
+
+  pm = dstbuf;
+
+  while (fend != IW_TRUE) {
+    /* check session buffer */
+    if (clses->sesbuf->datalen == 0) {
+      DBG_PRINT(DBG_SESBUF_EMPTY);
+      if (load_data(clses, ads) == IW_ERR) {
+	pmsg(E_FAIL_LOADFILE, clses->filename);
+    	goto err;
+      }
+
+      /* check EOF */
+      if (clses->sesbuf->datalen == 0) {
+	fend = IW_TRUE;
+	continue;
+      }	
+    }
+    DBG_SH_SESBUF(clses->tftpmode, clses->sesbuf->datalen);
+
+    if (clses->tftpmode == TFTP_MODE_OCTET) {
+      len = (clses->sesbuf->datalen < dstbufsize) ? clses->sesbuf->datalen : dstbufsize;
+      memcpy(pm, clses->sesbuf->pos, len);
+      clses->sesbuf->pos += len;
+      clses->sesbuf->datalen -= len;
+    }
+    else if (clses->tftpmode == TFTP_MODE_NETASCII) {
+      len = local_to_netascii(pm, dstbufsize, clses->sesbuf);
+    }
+
+    DBG_SH_SESBUF_IOLEN(len);
+    DBG_SH_SESBUF(clses->tftpmode, clses->sesbuf->datalen);
+    
+    if (len < dstbufsize) {
+      pm += len;
+      dstbufsize -= len;
+    }
+    else {
+      fend = IW_TRUE;
+    }
+    total += len;
+  }
+  
+  return (ssize_t)total;
+
+ err:
+  return IW_ERR;
+}
+
+
+static ssize_t
+put_session_data(struct session *clses, IWDS *ads, void *data, size_t datalen)
+{
+  uint8_t *pm;
+  size_t len = 0;
+  size_t total = 0;
+  int32_t fend = IW_FALSE;
+
+  if (clses->sesbuf->datalen == 0 && datalen == 0) {
+    return 0;
+  }
+  
+  pm = data;
+
+  while (fend != IW_TRUE) {
+    DBG_SH_SESBUF(clses->tftpmode, clses->sesbuf->datalen);
+
+    if (clses->tftpmode == TFTP_MODE_OCTET) {
+      len = sizeof clses->sesbuf->storage - clses->sesbuf->datalen;
+      if (len > datalen) {
+	len = datalen;
+      }
+      memcpy(clses->sesbuf->pos, pm, len);
+      clses->sesbuf->pos += len;
+      clses->sesbuf->datalen += len;
+    }    
+    else if (clses->tftpmode == TFTP_MODE_NETASCII) {
+      len = netascii_to_local(clses->sesbuf, pm, datalen);
+    }
+
+    DBG_SH_SESBUF_IOLEN(len);
+    DBG_SH_SESBUF(clses->tftpmode, clses->sesbuf->datalen);
+
+    if (len < datalen) {
+      pm += len;
+      datalen -= len;
+    }
+    else {
+      fend = IW_TRUE;
+    }
+    total += len;
+
+    /* check availability of the session buffer and EOT */
+    if (clses->sesbuf->datalen == sizeof clses->sesbuf->storage || clses->fin == IW_TRUE) {
+      DBG_PRINT(DBG_SESBUF_FULLORFIN);
+      if (save_data(clses, ads) == IW_ERR) {
+	pmsg(E_FAIL_SAVEFILE, clses->filename);
+	goto err;
+      }
+    }
+  }
+
+  return (ssize_t)total;
+
+ err:
+  return IW_ERR;
+}
+
+
+static size_t
+netascii_to_local(struct datastorage *sb, void *srcdata, size_t srclen)
+{
+  uint8_t *ps;
+  size_t chklen = 0;
+  uint8_t found = IW_FALSE;
+
+  ps = srcdata;
+
+  while (chklen < sizeof sb->storage - sb->datalen && chklen < srclen) {
+    if (*ps == '\r') {
+      found = IW_TRUE;
+      break;
+    }
+    ps++;
+    chklen++;
+  }
+
+  if (chklen > 0) {
+    memcpy(sb->pos, srcdata, chklen);
+    sb->pos += chklen;
+    sb->datalen += chklen;
+  }
+
+  if (found == IW_TRUE) {
+    chklen++;
+  }
+    
+  return chklen;
+}
+
+
+static size_t
+local_to_netascii(void *dstbuf, size_t bufsize, struct datastorage *sb)
+{
+  uint8_t *ps;
+  uint8_t *pd;
+  size_t dstlen = 0;
+  int32_t found = IW_FALSE;
+
+  ps = sb->pos;
+  pd = dstbuf;
+
+  while (dstlen < bufsize && sb->datalen > 0) {
+    if (*ps == '\n') {
+      found = IW_TRUE;
+      break;
+    }
+    ps++;
+    dstlen++;
+    sb->datalen--;
+  }
+    
+  if (dstlen > 0) {
+    memcpy(pd, sb->pos, dstlen);
+  }
+  sb->pos = ps;
+    
+  if (found == IW_TRUE) {
+    if (bufsize - dstlen >= 2) {
+      if (sb->fopt == IW_TRUE) {
+	*(pd + dstlen) = *sb->pos;
+	dstlen += 1;
+	sb->fopt = IW_FALSE;
+      }
+      else {
+	*(pd + dstlen) = '\r';
+	*(pd + dstlen + 1) = *sb->pos;
+	dstlen += 2;
+      }
+	
+      sb->pos++;
+      sb->datalen--;
+    }
+    else if (bufsize - dstlen == 1) {
+      *(pd + dstlen) = '\r';
+      dstlen += 1;
+      sb->fopt = IW_TRUE;
+    }
+  }
+  
+  return dstlen;
+}
+
+
+/* for I/O between the datastore */
+/* ----------------------------- */
+static int32_t
+load_data(struct session *clses, IWDS *ads)
+{
+  DBG_PRINT(DBG_DS_LOAD);
+  struct dsreq dticket;
+
+  DBG_PRINT(DBG_DS_SETREQ);
+  
+  dticket.dsid = clses->clsock;
+  dticket.dfile = clses->filename;
+  dticket.dbuf = clses->sesbuf->storage;
+  dticket.dlen = SESSION_BUFSIZE;
+  dticket.derr = 0;
+
+  DBG_SH_DSREQ(dticket);
+
+  clses->sesbuf->datalen = iwds_read(ads, &dticket);
+  if (dticket.derr) {
+    pmsg(E_DS_FAIL_READ, iwds_strerr(dticket.derr));
+    goto err;
+  }
+
+  DBG_SH_DSIOLEN(clses->sesbuf->datalen);
+  DBG_SH_DSREQ(dticket);
+  
+  clses->sesbuf->pos = clses->sesbuf->storage;
+  
+  return IW_OK;
+
+ err:
+  close_data(clses, ads);
+  return IW_ERR;
+}
+
+
+static int32_t
+save_data(struct session *clses, IWDS *ads)
+{
+  DBG_PRINT(DBG_DS_SAVE);
+  struct dsreq dticket;
+  size_t wlen;
+
+  DBG_PRINT(DBG_DS_SETREQ);
+  /* save data to datastore */
+  dticket.dsid = clses->clsock;
+  dticket.dfile = clses->filename;
+  dticket.dbuf = clses->sesbuf->storage;
+  dticket.dlen = clses->sesbuf->datalen;
+  dticket.derr = 0;
+  
+  DBG_SH_DSREQ(dticket);
+  
+  wlen = iwds_write(ads, &dticket);
+  if (dticket.derr) {
+    pmsg(E_DS_FAIL_WRITE, iwds_strerr(dticket.derr));
+    goto err;
+  }
+
+  DBG_SH_DSIOLEN(wlen);
+  DBG_SH_DSREQ(dticket);
+
+  clses->sesbuf->datalen = 0;
+  clses->sesbuf->pos = clses->sesbuf->storage;
+
+  return IW_OK;
+
+ err:
+  close_data(clses, ads);
+  return IW_ERR;
+}
+
+
+static void
+close_data(struct session *clses, IWDS *ads)
+{
+  DBG_PRINT(DBG_CLOSE_DATA);
+  struct dsreq dticket;
+
+  /* close the file reading or writing */
+  dticket.dsid = clses->clsock;
+  dticket.dfile = clses->filename;
+  dticket.dbuf = NULL;
+  dticket.dlen = 0;
+  dticket.derr = 0;
+
+  if (iwds_close(ads, &dticket) == IW_ERR) {
+    pmsg(E_DS_FAIL_CLOSE, iwds_strerr(dticket.derr));
+  }
+}
 
 
 /* for debugging */

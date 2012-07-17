@@ -55,6 +55,7 @@
 #define RESEND_COUNTMAX 3				/* maximum number of resending counts */
 #define SESSION_CLOSEWAIT 15				/* time of waiting for closing the finished session */
 #define NWBUF_SIZE 1024					/* size of buffer for send/recv */
+#define SESSION_BUFSIZE 8192	                        /* size of the session buffer */
 
 /* for TFTP protocol */
 #define TFTP_OPCODE_SIZE 2	               /* size of Opcode field (bytes) */
@@ -68,12 +69,22 @@
 /* maximum length of the TFTP message (bytes) */
 #define TFTP_MSGLEN_MAX (TFTP_OPCODE_SIZE + TFTP_BLKNUM_SIZE + TFTP_DATALEN_MAX)
 
+/* check bool of TFTP mode */
+#define IS_NETASCII(m) (strcmp((m), "netascii") == 0 ? IW_TRUE : IW_FALSE)
+#define IS_OCTET(m) (strcmp((m), "octet") == 0 ? IW_TRUE : IW_FALSE)
+
 
 /* iwtftp object */
 struct _iwtftp {
   int svsocks[SVSOCKS_MAX];	       /* sever sockets (IPv4/IPv6) */
   IWDS *ads;			       /* pointer to iwds module */
   struct session *seshead;	       /* head of the session list */
+};
+
+/* TFTP modes */
+enum TFTP_MODE {
+  TFTP_MODE_NETASCII,
+  TFTP_MODE_OCTET
 };
 
 /* session */
@@ -84,6 +95,8 @@ struct session {
   uint16_t clport;		       /* client port number */
   int clsock;			       /* client socket */
   int32_t regevent;	               /* flag of whether epoll event is registered */
+  enum TFTP_MODE tftpmode;	       /* TFTP transfer mode */
+  struct datastorage *sesbuf;	       /* data buffer of this session */
   char filename[TFTP_FILENAME_MAX];    /* requested file */
   uint16_t blknum;		       /* last block number */
   int32_t fin;		               /* flag of whether transfer is finished */
@@ -91,7 +104,15 @@ struct session {
   size_t lastmsglen;		       /* length of last message */
   time_t lastsending;		       /* time of last sending */
   int32_t retrycount;		       /* count of resending */
-  int32_t disabled;			       /* flag of session discard */
+  int32_t disabled;		       /* flag of session discard */
+};
+
+/* data storage for the session */
+struct datastorage {
+  uint8_t *pos;			       /* position indicator of the data buffer */
+  int32_t fopt;			       /* flag of option */
+  size_t datalen;		       /* length of data */
+  uint8_t storage[SESSION_BUFSIZE];   /* storage area of data */
 };
 
 /* IP addresses on the network interface */
@@ -218,6 +239,8 @@ enum T_STATCODE_VERBOSE {
   EV_FAIL_SOCKET,
   EV_NULL_OBJ,
   EV_SESSION_NOTFOUND,  
+  EV_FAIL_GET_SESBUF,
+  EV_FAIL_PUT_SESBUF,
   /* info verbose */
   IV_ACK_INCORRECT,
   IV_DATA_INCORRECT,
@@ -275,6 +298,12 @@ enum T_STATCODE_VERBOSE {
   DBG_TFTP_PROC,
   DBG_UPDATE_EVENT,
   DBG_UPDATE_RETRY,
+  DBG_GET_SESBUF_DATA,
+  DBG_PUT_SESBUF_DATA,
+  DBG_SESBUF_IOLEN,
+  DBG_SESBUF,
+  DBG_SESBUF_EMPTY,
+  DBG_SESBUF_FULLORFIN,
 #endif	/* DEBUG */
 };
 
@@ -287,11 +316,10 @@ static int32_t update_event(int epollfd, struct session *head);
 static int32_t tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
 		     void *dbuf, size_t dlen, struct sendinfo *sinfo);
 static int32_t resend_allsession(struct session *head, IWDS *ads);
-static struct session *add_newsession(struct session **phead, int svsock,
-				      const char *clip, uint16_t clport, const char *file);
+static struct session *add_newsession(struct session **phead, int svsock, const char *clip, uint16_t clport,
+				      const char *file, const char *mode);
 static struct session *create_session(struct session **phead);
 static struct session *get_session(struct session *head, const char *clip, uint16_t clport);
-static void close_data(struct session *clses, IWDS *ads);
 static void del_session(struct session **phead, const char *clip, uint16_t clport);
 static void del_allsession(struct session **phead);
 static void cleanup_session(struct session **phead);
@@ -303,7 +331,13 @@ static ssize_t make_tftpdata_msg(struct session *clses, IWDS *ads, void *emptybu
 static ssize_t make_tftpack_msg(struct session *clses, uint16_t blk, void *emptybuf, size_t bufsize);
 static ssize_t make_tftperr_msg(uint16_t ecode, void *emptybuf, size_t bufsize,
 				const char *emsg, size_t emsglen);
-static ssize_t save_data(struct session *clses, IWDS *ads, void *data, size_t datalen);
+static ssize_t get_session_data(struct session *clses, IWDS *ads, void *dstbuf, size_t dstbufsize);
+static ssize_t put_session_data(struct session *clses, IWDS *ads, void *data, size_t datalen);
+static size_t netascii_to_local(struct datastorage *sb, void *srcdata, size_t srclen);
+static size_t local_to_netascii(void *dstbuf, size_t bufsize, struct datastorage *sb);
+static int32_t load_data(struct session *clses, IWDS *ads);
+static int32_t save_data(struct session *clses, IWDS *ads);
+static void close_data(struct session *clses, IWDS *ads);
 
 
 /* for debugging */
@@ -323,6 +357,9 @@ static ssize_t save_data(struct session *clses, IWDS *ads, void *data, size_t da
 #define DBG_SH_SESSION(ses) dbg_show_session(ses)
 #define DBG_SH_SOCKET(so, ip, sv) pmsg(DBG_SOCKET, so, ip, sv)
 #define DBG_SH_TFTPMSG(sw, m, len) dbg_show_tftpmsg(sw, m, len)
+#define DBG_SH_SESBUF_IOLEN(len) pmsg(DBG_SESBUF_IOLEN, len)
+#define DBG_SH_SESBUF(mode, len) pmsg(DBG_SESBUF, mode, len)
+
 
 static void dbg_show_session(struct session *ses);
 static void dbg_show_allsession(struct session *head);
@@ -344,6 +381,9 @@ static void dbg_show_tftpmsg(int32_t sw, void *ptr, size_t msglen);
 #define DBG_SH_SESSION(ses)
 #define DBG_SH_SOCKET(so, ip, sv)
 #define DBG_SH_TFTPMSG(sw, m, len)
+#define DBG_SH_SESBUF_IOLEN(len)
+#define DBG_SH_SESBUF(mode, len)
+
 #endif	/* DEBUG */
 
 

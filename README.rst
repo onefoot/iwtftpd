@@ -49,11 +49,6 @@ The user ID of the process will be changed to *USER* or 'nobody' (by default).
 By default, the data store is '/tftpboot'.
 You must have created this directory and set the permissions 'rwxrwxrwx'.
 
-Note
-----
-
-The transfer mode 'netascii' is not supported. use only 'octet'.
-
 Uninstall
 ---------
 ::

@@ -83,8 +83,8 @@ struct _iwtftp {
 
 /* TFTP modes */
 enum TFTP_MODE {
-  TFTP_MODE_NETASCII,
-  TFTP_MODE_OCTET
+  TFTP_MODE_NETASCII,		       /* netascii mode */
+  TFTP_MODE_OCTET,		       /* octet mode */
 };
 
 /* session */
@@ -112,7 +112,7 @@ struct datastorage {
   uint8_t *pos;			       /* position indicator of the data buffer */
   int32_t fopt;			       /* flag of option */
   size_t datalen;		       /* length of data */
-  uint8_t storage[SESSION_BUFSIZE];   /* storage area of data */
+  uint8_t storage[SESSION_BUFSIZE];    /* storage area of data */
 };
 
 /* IP addresses on the network interface */
@@ -314,7 +314,7 @@ static int32_t get_ifaddress(const char *ifname, struct ifinet *iaddr);
 static int create_socket(int family, const char *ip, const char *service);
 static int32_t update_event(int epollfd, struct session *head);
 static int32_t tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
-		     void *dbuf, size_t dlen, struct sendinfo *sinfo);
+			 void *dbuf, size_t dlen, struct sendinfo *sinfo);
 static int32_t resend_allsession(struct session *head, IWDS *ads);
 static struct session *add_newsession(struct session **phead, int svsock, const char *clip, uint16_t clport,
 				      const char *file, const char *mode);

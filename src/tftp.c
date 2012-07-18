@@ -786,10 +786,11 @@ tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
     else if (ntohs(*datmsg.blknum) == (clses->blknum < TFTP_BLKNUM_MAX ? clses->blknum + 1 : 0)) {
       /* check fin */
       if (dlen - sizeof(uint16_t) * 2 < TFTP_DATALEN_MAX) {
-	clses->fin = IW_TRUE;
 	DBG_PRINT(DBG_SET_FIN);
+	clses->fin = IW_TRUE;
       }
 
+      /* store TFTP data in session buffer */
       DBG_PRINT(DBG_PUT_SESBUF_DATA);
       if (put_session_data(clses, ins->ads, datmsg.data, dlen - sizeof(uint16_t) * 2) == IW_ERR) {
 	pmsg(EV_FAIL_PUT_SESBUF, clses->clip, clses->clport);
@@ -834,11 +835,10 @@ tftp_proc(IWTFTP *ins, int sock, const char *clip, uint16_t clport,
       goto resend;
     }
     else if (ntohs(*ackmsg.blknum) == clses->blknum) {
+      /* check fin */
       if (clses->fin == IW_TRUE) {
-	/* finished */
 	DBG_PRINT(DBG_SET_DISABLE);
 	clses->disabled = IW_TRUE;
-	close_data(clses, ins->ads);
 	goto done;
       }
 
@@ -1330,8 +1330,8 @@ parse_tftperror(struct tftperror *terr, void *msg, size_t msglen)
 }
 
 
-/* operations of TFTP */
-/* ----------------- */
+/* manipurating TFTP message*/
+/* ------------------------- */
 static ssize_t
 make_tftpdata_msg(struct session *clses, IWDS *ads, void *emptybuf, size_t bufsize)
 {
@@ -1362,8 +1362,8 @@ make_tftpdata_msg(struct session *clses, IWDS *ads, void *emptybuf, size_t bufsi
 
   /* check fin */
   if (datalen < TFTP_DATALEN_MAX) {
-    clses->fin = IW_TRUE;
     DBG_PRINT(DBG_SET_FIN);
+    clses->fin = IW_TRUE;
     close_data(clses, ads);
   }
 

@@ -47,7 +47,7 @@ Must be run as root. The root directory will be changed to the data store.
 The user ID of the process will be changed to *USER* or 'nobody' (by default).
 
 By default, the data store is '/tftpboot'.
-You must have created this directory and set the permissions 'rwxrwxrwx'.
+You must have created this directory and set the permissions for *USER*.
 
 Uninstall
 ---------

@@ -7,7 +7,6 @@ set(PRJ_MINOR_VERSION "0")
 set(PRJ_VERSION "${PRJ_MAJOR_VERSION}.${PRJ_MINOR_VERSION}")
 
 set(TARGET_NAME iwtftpd)
-set(CMAKE_C_FLAGS "-W -Wall")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 set(LIBPOPT popt)
 
@@ -22,9 +21,11 @@ set(SOURCE_FILES
 if(DEBUG)
   set(CMAKE_BUILD_TYPE "Debug")
   add_definitions(-DDEBUG)
+  add_definitions(-g)
 endif()
 
 add_definitions(-DPROGRAM_VERSION=\"${PRJ_VERSION}\")
+add_definitions(-W -Wall)
 
 add_executable(${TARGET_NAME} ${SOURCE_FILES})
 target_link_libraries(${TARGET_NAME} ${LIBPOPT})

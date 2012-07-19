@@ -1710,7 +1710,7 @@ save_data(struct session *clses, IWDS *ads)
   DBG_SH_DSREQ(dticket);
   
   wlen = iwds_write(ads, &dticket);
-  if (dticket.derr) {
+  if (dticket.derr || wlen != clses->sesbuf->datalen) {
     pmsg(E_DS_FAIL_WRITE, iwds_strerr(dticket.derr));
     goto err;
   }
